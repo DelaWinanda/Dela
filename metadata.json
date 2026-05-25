@@ -1,0 +1,6 @@
+{
+  "name": "IoT Relay Control & DHT11 Monitor",
+  "description": "Web interface to control 4 relay channels, monitor DHT11 sensor data, send voice commands, and communicate via Telegram Bot API or Direct IP.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
