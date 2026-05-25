@@ -12,13 +12,11 @@ export interface SensorData {
   timestamp: string; // ISO string or simple time
 }
 
-export type ConnectionMode = 'simulation' | 'direct' | 'telegram' | 'cloud_sync';
+export type ConnectionMode = 'direct';
 
 export interface AppConfig {
   mode: ConnectionMode;
   directIp: string;
-  telegramToken: string;
-  telegramChatId: string;
   autoRefreshInterval: number; // in ms
   useVoiceSynth: boolean;
 }

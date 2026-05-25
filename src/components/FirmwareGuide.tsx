@@ -4,12 +4,11 @@ import { FileCode, Copy, Check, Terminal } from 'lucide-react';
 export default function FirmwareGuide() {
   const [copied, setCopied] = useState(false);
 
-  // Updated, extended, production-grade Arduino Sketch supporting full-featured CORS & Local Server.
   const codeString = `/*
- * IoT Controller: 4 Relay + Sensor DHT11 via Telegram Bot & Local REST API
+ * IoT Controller: 4 Relay + Sensor DHT11 via Direct IP REST API
  * Mendukung ESP32 dan ESP8266
  * 
- * Update: Menambahkan Local HTTP Server (Port 80) untuk Direct IP (Tanpa Delay)
+ * Update: Web Server Ringan (Port 80) dengan dukungan CORS Handshake
  */
 
 #ifdef ESP32
@@ -20,30 +19,21 @@ export default function FirmwareGuide() {
   #include <ESP8266WebServer.h>
 #endif
 
-#include <WiFiClientSecure.h>
-#include <UniversalTelegramBot.h>
 #include <ArduinoJson.h>
 #include <DHT.h>
 
-// ===================== KONFIGURASI — UBAH DI SINI =====================
+// ===================== KONFIGURASI WIFI — UBAH DI SINI =====================
 const char* ssid     = "Nama_WiFi_Anda";
 const char* password = "Password_WiFi_Anda";
-
-#define BOTtoken  "8611614379:AAESo7Y4Fh1_V27YYqh-yCfLT19sB8ztkkI"
-#define CHAT_ID   "1300283513"
-
-// Jika menggunakan Cloud REST Sync, masukkan domain Server ini (misal Ngrok atau IP Server)
-const String cloudServerURL = "http://localhost:3000/api/sensor-data"; 
-// ======================================================================
+// ===========================================================================
 
 // ---------- Pin Relay (Active-LOW: LOW = ON, HIGH = OFF) ----------
 const int relayPin[4] = {23, 19, 18, 5}; 
-const String relayName[4] = {"Relay 1", "Relay 2", "Relay 3", "Relay 4"};
 bool relayState[4] = {false, false, false, false};
 
 // ---------- Mode Variasi ----------
-int variMode = 0;           // 0 = tidak aktif, 1 = maju, 2 = mundur
-#define VARI_DELAY 500       // jeda antar relay dalam ms
+int variMode = 0;           // 0 = tidak aktif, 1 = 1->2->3->4, 2 = 4->3->2->1
+#define VARI_DELAY 500       // jeda sekuensial antar relay (ms)
 unsigned long lastVariStep;
 int variIndex = 0;
 
@@ -51,12 +41,6 @@ int variIndex = 0;
 #define DHTPIN  4
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
-
-// ---------- Telegram & API Client ----------
-WiFiClientSecure client;
-UniversalTelegramBot bot(BOTtoken, client);
-int botRequestDelay = 1000;
-unsigned long lastTimeBotRan;
 
 // ---------- Local HTTP Web Server (Port 80) ----------
 #ifdef ESP32
@@ -162,107 +146,6 @@ void handleVariasi() {
 }
 
 // =====================================================================
-//  SENDER & STATUS TELEGRAM
-// =====================================================================
-
-void sendDHTData(String chat_id) {
-  float humidity    = dht.readHumidity();
-  float temperature = dht.readTemperature();
-
-  if (isnan(humidity) || isnan(temperature)) {
-    bot.sendMessage(chat_id, "⚠️ Gagal membaca sensor DHT11. Periksa koneksi sensor.", "");
-    return;
-  }
-
-  float heatIndex = dht.computeHeatIndex(temperature, humidity, false);
-
-  String msg = "🌡️ *Data Sensor DHT11*\\n";
-  msg += "──────────────────\\n";
-  msg += "🌡 Suhu      : *" + String(temperature, 1) + " °C*\\n";
-  msg += "💧 Kelembapan: *" + String(humidity, 1) + " %*\\n";
-  msg += "🔥 Heat Index: *" + String(heatIndex, 1) + " °C*\\n";
-
-  bot.sendMessage(chat_id, msg, "Markdown");
-}
-
-void sendRelayStatus(String chat_id) {
-  String msg = "🔌 *Status Relay*\\n";
-  msg += "──────────────────\\n";
-  for (int i = 0; i < 4; i++) {
-    msg += (relayState[i] ? "🟢" : "🔴");
-    msg += " " + relayName[i] + ": *" + (relayState[i] ? "ON" : "OFF") + "*\\n";
-  }
-  bot.sendMessage(chat_id, msg, "Markdown");
-}
-
-void sendWelcome(String chat_id, String from_name) {
-  String msg = "👋 Halo, *" + from_name + "*!\\n\\n";
-  msg += "📋 *Daftar Perintah:*\\n";
-  msg += "──────────────────\\n";
-  msg += "🔌 *Kontrol Relay:*\\n";
-  msg += "/relay1\\\\_on  — Nyalakan Relay 1\\n";
-  msg += "/relay1\\\\_off — Matikan Relay 1\\n";
-  msg += "/all\\\\_on     — Nyalakan semua relay\\n";
-  msg += "/all\\\\_off    — Matikan semua relay\\n\\n";
-  msg += "✨ *Mode Variasi:*\\n";
-  msg += "/vari1      — Nyala bergantian 1→2→3→4\\n";
-  msg += "/vari2      — Nyala bergantian 4→3→2→1\\n";
-  msg += "/vari\\\\_stop — Hentikan mode variasi\\n\\n";
-  msg += "📊 *Sensor & Status:*\\n";
-  msg += "/dht        — Baca suhu & kelembapan\\n";
-  msg += "/status     — Status semua relay\\n";
-  bot.sendMessage(chat_id, msg, "Markdown");
-}
-
-void handleNewMessages(int numNewMessages) {
-  for (int i = 0; i < numNewMessages; i++) {
-    String chat_id   = String(bot.messages[i].chat_id);
-    String from_name = bot.messages[i].from_name;
-    String text      = bot.messages[i].text;
-
-    if (chat_id != CHAT_ID) {
-      bot.sendMessage(chat_id, "⛔ Unauthorized user.", "");
-      continue;
-    }
-
-    if (text == "/start") {
-      sendWelcome(chat_id, from_name);
-    } else if (text == "/relay1_on")  { variMode = 0; setRelay(0, true);  bot.sendMessage(chat_id, "✅ Relay 1 ON", ""); }
-    else if (text == "/relay1_off") { variMode = 0; setRelay(0, false); bot.sendMessage(chat_id, "❌ Relay 1 OFF", ""); }
-    else if (text == "/all_on") {
-      variMode = 0;
-      for (int r = 0; r < 4; r++) setRelay(r, true);
-      bot.sendMessage(chat_id, "✅ Semua relay ON", "");
-    }
-    else if (text == "/all_off") {
-      variMode = 0;
-      for (int r = 0; r < 4; r++) setRelay(r, false);
-      bot.sendMessage(chat_id, "❌ Semua relay OFF", "");
-    }
-    else if (text == "/vari1") {
-      allRelayOff();
-      variMode = 1; variIndex = 0; lastVariStep = millis();
-      bot.sendMessage(chat_id, "✨ Variasi 1 aktif", "");
-    }
-    else if (text == "/vari2") {
-      allRelayOff();
-      variMode = 2; variIndex = 0; lastVariStep = millis();
-      bot.sendMessage(chat_id, "✨ Variasi 2 aktif", "");
-    }
-    else if (text == "/vari_stop") {
-      variMode = 0; allRelayOff();
-      bot.sendMessage(chat_id, "⏹ Variasi berhenti", "");
-    }
-    else if (text == "/dht") {
-      sendDHTData(chat_id);
-    }
-    else if (text == "/status") {
-      sendRelayStatus(chat_id);
-    }
-  }
-}
-
-// =====================================================================
 //  SETUP & BOOTING
 // =====================================================================
 void setup() {
@@ -275,17 +158,8 @@ void setup() {
 
   dht.begin();
 
-#ifdef ESP8266
-  configTime(0, 0, "pool.ntp.org");
-  client.setTrustAnchors(&cert);
-#endif
-
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-
-#ifdef ESP32
-  client.setCACert(TELEGRAM_CERTIFICATE_ROOT);
-#endif
 
   Serial.print("Menghubungkan ke WiFi");
   while (WiFi.status() != WL_CONNECTED) {
@@ -294,7 +168,7 @@ void setup() {
   }
   
   Serial.println("\\n✅ WiFi terhubung!");
-  Serial.print("🌐 IP Local ESP32: ");
+  Serial.print("🌐 IP Local ESP: ");
   Serial.println(WiFi.localIP());
 
   // Setup Local HTTP Server Routers
@@ -309,17 +183,8 @@ void setup() {
 //  LOOP UTAMA
 // =====================================================================
 void loop() {
-  server.handleClient(); // Handle server Direct IP (0ms delay!)
+  server.handleClient(); // Handle server Direct IP
   runVariasiStep();      // Jalankan sekuens variasi
-
-  if (millis() > lastTimeBotRan + botRequestDelay) {
-    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-    while (numNewMessages) {
-      handleNewMessages(numNewMessages);
-      numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-    }
-    lastTimeBotRan = millis();
-  }
 }
 `;
 
@@ -338,8 +203,8 @@ void loop() {
             <FileCode className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-sm font-bold uppercase tracking-wider font-display">Panduan Firmware ESP32/ESP8266</h2>
-            <p className="text-[10px] font-mono text-[#141414]/60">Kode multi-mode (REST Sync & Telegram Bot)</p>
+            <h2 className="text-sm font-bold uppercase tracking-wider font-display">Panduan Firmware Direct IP (Arduino Sketch)</h2>
+            <p className="text-[10px] font-mono text-[#141414]/60">Kode Web Server Port 80 + CORS Handshake</p>
           </div>
         </div>
 
@@ -362,7 +227,7 @@ void loop() {
       </div>
 
       <p className="text-xs text-[#141414]/80 mb-4 leading-relaxed font-sans">
-        Gunakan sketch di bawah untuk mengaktifkan <strong className="font-bold">Web Server Direct IP pada port 80</strong> bersamaan dengan polling Telegram. Kode ini dikonfigurasi dengan <strong className="font-bold">CORS Handshake Headers</strong> agar aman dari restriksi browser modern.
+        Gunakan sketch minimalis di bawah untuk menjalankan Web Server local langsung di port 80 ESP32/ESP8266 Anda. Program ini telah diprogram dengan <strong className="font-bold">CORS Handshake Headers</strong> agar browser dari localhost maupun cloud diizinkan mengakses resource secara asinkron.
       </p>
 
       {/* Embedded Code block */}
@@ -370,9 +235,9 @@ void loop() {
         <div className="flex items-center justify-between border-b border-[#E4E3E0]/15 pb-2 mb-2 text-white/50">
           <span className="flex items-center space-x-1.5 font-bold text-[9px]">
             <Terminal className="w-3.5 h-3.5" />
-            <span>ESP32_REDUX_CORS_FIRMWARE.INO</span>
+            <span>ESP_DIRECT_IP_CORS.INO</span>
           </span>
-          <span className="text-[9px] uppercase tracking-wider font-bold">C++ / Arduino</span>
+          <span className="text-[9px] uppercase tracking-wider font-bold">C++ (Arduino IDE)</span>
         </div>
         <pre className="whitespace-pre font-mono leading-relaxed">{codeString}</pre>
       </div>
@@ -380,16 +245,16 @@ void loop() {
       {/* Instruction Steps */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5 pt-4 border-t-2 border-[#141414]/15 text-[10px]">
         <div className="bg-white p-3 border-2 border-[#141414] shadow-[3px_3px_0px_0px_rgba(20,20,20,1)]">
-          <span className="font-bold uppercase tracking-wider block mb-1 font-display">1. Pasang Library:</span>
-          DHT Sensor, ArduinoJson v6, dan UniversalTelegramBot.
+          <span className="font-bold uppercase tracking-wider block mb-1 font-display">1. Library:</span>
+          Pastikan Anda menginstal Library <strong className="font-bold">DHT sensor library</strong> (oleh Adafruit) dan <strong className="font-bold">ArduinoJson</strong>.
         </div>
         <div className="bg-white p-3 border-2 border-[#141414] shadow-[3px_3px_0px_0px_rgba(20,20,20,1)]">
           <span className="font-bold uppercase tracking-wider block mb-1 font-display">2. Sesuaikan WiFi:</span>
-          Ubah SSID, Password WiFi, Token Bot, dan Chat ID Anda.
+          Tulis SSID dan Password WiFi lokal Anda pada konstanta WiFi di bagian atas program.
         </div>
         <div className="bg-white p-3 border-2 border-[#141414] shadow-[3px_3px_0px_0px_rgba(20,20,20,1)]">
           <span className="font-bold uppercase tracking-wider block mb-1 font-display">3. Masukkan IP:</span>
-          Tulis IP lokal ESP32 Anda ke input panel samping!
+          Salin alamat IP local dari Serial Monitor ke input konfigurasi di panel samping kanan!
         </div>
       </div>
     </div>
