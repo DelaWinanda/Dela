@@ -5,10 +5,14 @@ export default function FirmwareGuide() {
   const [copied, setCopied] = useState(false);
 
   const codeString = `/*
- * IoT Controller: 4 Relay + Sensor DHT11 via Direct IP REST API
+ * IoT Controller: 4 Relay + Sensor DHT11 via Direct IP REST API & Telegram Bot
  * Mendukung ESP32 dan ESP8266
  * 
- * Update: Web Server Ringan (Port 80) dengan dukungan CORS Handshake
+ * Library yang dibutuhkan (install via Library Manager):
+ *  - UniversalTelegramBot by Brian Lough
+ *  - ArduinoJson
+ *  - DHT sensor library by Adafruit
+ *  - Adafruit Unified Sensor
  */
 
 #ifdef ESP32
@@ -19,21 +23,31 @@ export default function FirmwareGuide() {
   #include <ESP8266WebServer.h>
 #endif
 
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
 #include <ArduinoJson.h>
 #include <DHT.h>
 
-// ===================== KONFIGURASI WIFI — UBAH DI SINI =====================
-const char* ssid     = "Nama_WiFi_Anda";
-const char* password = "Password_WiFi_Anda";
-// ===========================================================================
+// ===================== KONFIGURASI — UBAH DI SINI =====================
+const char* ssid     = "Kocakk";
+const char* password = "11223344";
 
-// ---------- Pin Relay (Active-LOW: LOW = ON, HIGH = OFF) ----------
-const int relayPin[4] = {23, 19, 18, 5}; 
+#define BOTtoken  "8611614379:AAESo7Y4Fh1_V27YYqh-yCfLT19sB8ztkkI"
+#define CHAT_ID   "1300283513"
+// ======================================================================
+
+// ---------- Pin Relay (active-LOW: LOW = ON, HIGH = OFF) ----------
+const int relayPin[4] = {23, 19, 18, 5};
+
+// Nama relay (tampil di pesan Telegram)
+const String relayName[4] = {"Relay 1", "Relay 2", "Relay 3", "Relay 4"};
+
+// Status relay (true = ON)
 bool relayState[4] = {false, false, false, false};
 
 // ---------- Mode Variasi ----------
-int variMode = 0;           // 0 = tidak aktif, 1 = 1->2->3->4, 2 = 4->3->2->1
-#define VARI_DELAY 500       // jeda sekuensial antar relay (ms)
+int variMode = 0;           // 0 = tidak aktif, 1 = maju, 2 = mundur
+#define VARI_DELAY 50       // jeda sekuensial antar relay (ms)
 unsigned long lastVariStep;
 int variIndex = 0;
 
@@ -41,6 +55,17 @@ int variIndex = 0;
 #define DHTPIN  4
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
+
+// ---------- Telegram ----------
+#ifdef ESP8266
+  X509List cert(TELEGRAM_CERTIFICATE_ROOT);
+#endif
+
+WiFiClientSecure client;
+UniversalTelegramBot bot(BOTtoken, client);
+
+int botRequestDelay = 1000;
+unsigned long lastTimeBotRan;
 
 // ---------- Local HTTP Web Server (Port 80) ----------
 #ifdef ESP32
@@ -82,6 +107,143 @@ void runVariasiStep() {
 
   setRelay(activeRelay, true);
   variIndex++;
+}
+
+// =====================================================================
+//  TELEGRAM MESSAGE SENDS
+// =====================================================================
+
+void sendDHTData(String chat_id) {
+  float humidity    = dht.readHumidity();
+  float temperature = dht.readTemperature();
+
+  if (isnan(humidity) || isnan(temperature)) {
+    bot.sendMessage(chat_id, "⚠️ Gagal membaca sensor DHT11. Periksa koneksi sensor.", "");
+    return;
+  }
+
+  float heatIndex = dht.computeHeatIndex(temperature, humidity, false);
+
+  String msg = "🌡️ *Data Sensor DHT11*\n";
+  msg += "──────────────────\n";
+  msg += "🌡 Suhu      : *" + String(temperature, 1) + " °C*\n";
+  msg += "💧 Kelembapan: *" + String(humidity, 1) + " %*\n";
+  msg += "🔥 Heat Index: *" + String(heatIndex, 1) + " °C*\n";
+
+  bot.sendMessage(chat_id, msg, "Markdown");
+}
+
+void sendRelayStatus(String chat_id) {
+  String msg = "🔌 *Status Relay*\n";
+  msg += "──────────────────\n";
+  for (int i = 0; i < 4; i++) {
+    msg += (relayState[i] ? "🟢" : "🔴");
+    msg += " " + relayName[i] + ": *" + (relayState[i] ? "ON" : "OFF") + "*\n";
+  }
+  bot.sendMessage(chat_id, msg, "Markdown");
+}
+
+void sendWelcome(String chat_id, String from_name) {
+  String msg = "👋 Halo, *" + from_name + "*!\n\n";
+  msg += "📋 *Daftar Perintah:*\n";
+  msg += "──────────────────\n";
+  msg += "🔌 *Kontrol Relay:*\n";
+  msg += "/relay1\\_on  — Nyalakan Relay 1\n";
+  msg += "/relay1\\_off — Matikan Relay 1\n";
+  msg += "/relay2\\_on  — Nyalakan Relay 2\n";
+  msg += "/relay2\\_off — Matikan Relay 2\n";
+  msg += "/relay3\\_on  — Nyalakan Relay 3\n";
+  msg += "/relay3\\_off — Matikan Relay 3\n";
+  msg += "/relay4\\_on  — Nyalakan Relay 4\n";
+  msg += "/relay4\\_off — Matikan Relay 4\n";
+  msg += "/all\\_on     — Nyalakan semua relay\n";
+  msg += "/all\\_off    — Matikan semua relay\n\n";
+  msg += "✨ *Mode Variasi:*\n";
+  msg += "/vari1      — Nyala bergantian 1→2→3→4\n";
+  msg += "/vari2      — Nyala bergantian 4→3→2→1\n";
+  msg += "/vari\\_stop — Hentikan mode variasi\n\n";
+  msg += "📊 *Sensor & Status:*\n";
+  msg += "/dht        — Baca suhu & kelembapan\n";
+  msg += "/status     — Status semua relay\n";
+  bot.sendMessage(chat_id, msg, "Markdown");
+}
+
+// =====================================================================
+//  HANDLER PESAN MASUK TELEGRAM
+// =====================================================================
+void handleNewMessages(int numNewMessages) {
+  for (int i = 0; i < numNewMessages; i++) {
+
+    String chat_id   = String(bot.messages[i].chat_id);
+    String from_name = bot.messages[i].from_name;
+    String text      = bot.messages[i].text;
+
+    if (chat_id != CHAT_ID) {
+      bot.sendMessage(chat_id, "⛔ Unauthorized user.", "");
+      continue;
+    }
+
+    Serial.println("Pesan Telegram: " + text);
+
+    if (text == "/start") {
+      sendWelcome(chat_id, from_name);
+    }
+
+    else if (text == "/relay1_on")  { variMode = 0; setRelay(0, true);  bot.sendMessage(chat_id, "✅ " + relayName[0] + " *ON*", "Markdown"); }
+    else if (text == "/relay1_off") { variMode = 0; setRelay(0, false); bot.sendMessage(chat_id, "❌ " + relayName[0] + " *OFF*", "Markdown"); }
+
+    else if (text == "/relay2_on")  { variMode = 0; setRelay(1, true);  bot.sendMessage(chat_id, "✅ " + relayName[1] + " *ON*", "Markdown"); }
+    else if (text == "/relay2_off") { variMode = 0; setRelay(1, false); bot.sendMessage(chat_id, "❌ " + relayName[1] + " *OFF*", "Markdown"); }
+
+    else if (text == "/relay3_on")  { variMode = 0; setRelay(2, true);  bot.sendMessage(chat_id, "✅ " + relayName[2] + " *ON*", "Markdown"); }
+    else if (text == "/relay3_off") { variMode = 0; setRelay(2, false); bot.sendMessage(chat_id, "❌ " + relayName[2] + " *OFF*", "Markdown"); }
+
+    else if (text == "/relay4_on")  { variMode = 0; setRelay(3, true);  bot.sendMessage(chat_id, "✅ " + relayName[3] + " *ON*", "Markdown"); }
+    else if (text == "/relay4_off") { variMode = 0; setRelay(3, false); bot.sendMessage(chat_id, "❌ " + relayName[3] + " *OFF*", "Markdown"); }
+
+    else if (text == "/all_on") {
+      variMode = 0;
+      for (int r = 0; r < 4; r++) setRelay(r, true);
+      bot.sendMessage(chat_id, "✅ *Semua relay ON*", "Markdown");
+    }
+    else if (text == "/all_off") {
+      variMode = 0;
+      for (int r = 0; r < 4; r++) setRelay(r, false);
+      bot.sendMessage(chat_id, "❌ *Semua relay OFF*", "Markdown");
+    }
+
+    else if (text == "/vari1") {
+      allRelayOff();
+      variMode  = 1;
+      variIndex = 0;
+      lastVariStep = millis();
+      bot.sendMessage(chat_id, "✨ *Variasi 1 aktif:* 1 → 2 → 3 → 4\nKetik /vari\\_stop untuk menghentikan.", "Markdown");
+    }
+    else if (text == "/vari2") {
+      allRelayOff();
+      variMode  = 2;
+      variIndex = 0;
+      lastVariStep = millis();
+      bot.sendMessage(chat_id, "✨ *Variasi 2 aktif:* 4 → 3 → 2 → 1\nKetik /vari\\_stop untuk menghentikan.", "Markdown");
+    }
+    else if (text == "/vari_stop") {
+      variMode = 0;
+      allRelayOff();
+      bot.sendMessage(chat_id, "⏹ *Mode variasi dihentikan.* Semua relay OFF.", "Markdown");
+    }
+
+    else if (text == "/dht") {
+      sendDHTData(chat_id);
+    }
+
+    else if (text == "/status") {
+      sendRelayStatus(chat_id);
+    }
+
+    else {
+      bot.sendMessage(chat_id, "❓ Perintah tidak dikenal. Ketik /start untuk melihat daftar perintah.", "");
+    }
+  }
 }
 
 // =====================================================================
@@ -158,8 +320,17 @@ void setup() {
 
   dht.begin();
 
+#ifdef ESP8266
+  configTime(0, 0, "pool.ntp.org");
+  client.setTrustAnchors(&cert);
+#endif
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
+
+#ifdef ESP32
+  client.setCACert(TELEGRAM_CERTIFICATE_ROOT);
+#endif
 
   Serial.print("Menghubungkan ke WiFi");
   while (WiFi.status() != WL_CONNECTED) {
@@ -167,7 +338,7 @@ void setup() {
     Serial.print(".");
   }
   
-  Serial.println("\\n✅ WiFi terhubung!");
+  Serial.println("\n✅ WiFi terhubung!");
   Serial.print("🌐 IP Local ESP: ");
   Serial.println(WiFi.localIP());
 
@@ -185,6 +356,19 @@ void setup() {
 void loop() {
   server.handleClient(); // Handle server Direct IP
   runVariasiStep();      // Jalankan sekuens variasi
+
+  // Jalankan asinkron polling telegram
+  if (millis() > lastTimeBotRan + botRequestDelay) {
+    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+
+    while (numNewMessages) {
+      Serial.println("📨 Pesan baru Telegram: " + String(numNewMessages));
+      handleNewMessages(numNewMessages);
+      numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    }
+
+    lastTimeBotRan = millis();
+  }
 }
 `;
 
